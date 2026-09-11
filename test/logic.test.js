@@ -47,7 +47,7 @@ function loadSandbox({ fetchImpl } = {}) {
 
   const appScript = getAppScript();
   const exporter = `
-;globalThis.__exports = { BANKS, fmtVND, dayLabelOf, chipDateOf, scoreEmoji, computeTotal, makeStudent, Component };
+;globalThis.__exports = { BANKS, fmtVND, dayLabelOf, chipDateOf, timeLabelOf, dateTimeValueOf, scoreEmoji, computeTotal, makeStudent, Component };
 `;
   const full = DCLOGIC_SHIM + '\n' + appScript + '\n' + exporter;
   vm.runInContext(full, sandbox, { filename: 'app-script.js' });
@@ -76,12 +76,29 @@ test('scoreEmoji buckets scores into red/yellow/green', () => {
   assert.equal(E.scoreEmoji(10), '🟢');
 });
 
-test('dayLabelOf / chipDateOf handle valid and empty dates', () => {
+test('dayLabelOf / chipDateOf handle valid and empty dates, both plain-date and datetime-local formats', () => {
   const { exports: E } = loadSandbox();
   assert.equal(E.dayLabelOf(''), '');
   assert.equal(E.chipDateOf('2026-09-01'), '01/09');
   assert.equal(typeof E.dayLabelOf('2026-09-01'), 'string');
   assert.notEqual(E.dayLabelOf('2026-09-01'), '');
+  // datetime-local value ("...T14:30") must resolve to the same calendar day as the plain date.
+  assert.equal(E.dayLabelOf('2026-09-01T14:30'), E.dayLabelOf('2026-09-01'));
+  assert.equal(E.chipDateOf('2026-09-01T14:30'), '01/09');
+});
+
+test('timeLabelOf extracts HH:mm from a datetime-local value, blank for a plain date or empty', () => {
+  const { exports: E } = loadSandbox();
+  assert.equal(E.timeLabelOf(''), '');
+  assert.equal(E.timeLabelOf('2026-09-01'), '', 'a plain date (no time) has no time label');
+  assert.equal(E.timeLabelOf('2026-09-01T14:30'), '14:30');
+});
+
+test('dateTimeValueOf pads an old plain-date value with midnight so it still shows in a datetime-local picker', () => {
+  const { exports: E } = loadSandbox();
+  assert.equal(E.dateTimeValueOf(''), '');
+  assert.equal(E.dateTimeValueOf('2026-09-01'), '2026-09-01T00:00');
+  assert.equal(E.dateTimeValueOf('2026-09-01T14:30'), '2026-09-01T14:30', 'already-full datetime is left untouched');
 });
 
 test('computeTotal sums session fees, honoring per-session fee override and free flag', () => {
@@ -145,6 +162,43 @@ test('renderVals: studentList projects id/name/className/total for the roster ta
   assert.equal(vals.studentList[0].name, 'An');
   assert.equal(vals.studentList[0].totalLabel, '100.000 đ');
   assert.equal(typeof vals.studentList[0].onClick, 'function');
+});
+
+test('renderVals: sessionRows shows day + time together, and dateTimeValue pads legacy plain dates for the picker', () => {
+  const { c } = makeComponent();
+  c.state.loading = false;
+  c.state.students = [{
+    id: 's1', name: 'An', feePerSession: 100000,
+    sessions: [
+      { id: 'e1', date: '2026-09-01T14:30', fee: null, free: false },
+      { id: 'e2', date: '2026-09-03', fee: null, free: false }, // legacy plain-date record
+    ],
+  }];
+  c.state.activeId = 's1';
+  c.state.screen = 'detail';
+  const vals = c.renderVals();
+  const [row1, row2] = vals.sessionRows;
+  assert.equal(row1.dateTimeValue, '2026-09-01T14:30');
+  assert.match(row1.dayLabel, / · 14:30$/, 'time must be appended to the weekday label');
+  assert.equal(row2.dateTimeValue, '2026-09-03T00:00', 'legacy plain date is padded with midnight for the datetime-local input');
+  assert.doesNotMatch(row2.dayLabel, / · /, 'a record with no time must not show a time label');
+});
+
+test('renderVals: scheduleChips dedupes by calendar day, ignoring time of day', () => {
+  const { c } = makeComponent();
+  c.state.loading = false;
+  c.state.students = [{
+    id: 's1', name: 'An', feePerSession: 100000,
+    sessions: [
+      { id: 'e1', date: '2026-09-01T08:00', free: false },
+      { id: 'e2', date: '2026-09-01T14:30', free: false }, // same day, different time
+      { id: 'e3', date: '2026-09-03', free: false },
+    ],
+  }];
+  c.state.activeId = 's1';
+  c.state.screen = 'detail';
+  const vals = c.renderVals();
+  assert.deepEqual(vals.scheduleChips, ['01/09', '03/09']);
 });
 
 test('addStudent: appends a blank student, switches to detail screen, and POSTs only that one student (not the whole list)', async () => {
