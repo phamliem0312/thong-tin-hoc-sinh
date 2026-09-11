@@ -27,9 +27,19 @@ function loadSandbox({ fetchImpl } = {}) {
     return { ok: true, json: async () => [] };
   });
 
+  const listeners = {};
   const sandbox = {
     console,
-    window: { print: () => { sandbox.__printed = (sandbox.__printed || 0) + 1; } },
+    document: { title: 'Bundled Page' },
+    window: {
+      print: () => { sandbox.__printed = (sandbox.__printed || 0) + 1; },
+      addEventListener: (name, fn) => { (listeners[name] = listeners[name] || []).push(fn); },
+      removeEventListener: (name, fn) => {
+        if (!listeners[name]) return;
+        listeners[name] = listeners[name].filter((f) => f !== fn);
+      },
+      __fireEvent: (name) => { (listeners[name] || []).slice().forEach((fn) => fn()); },
+    },
     fetch: (...args) => fetchMock(...args),
     Date, Math, JSON, Array, Object, Number, String, Promise, Set, Map,
   };
@@ -108,10 +118,10 @@ test('makeStudent(true) returns the seeded demo record', () => {
 // ---- Component class behavior (list/detail screens, persistence) ----
 
 function makeComponent(fetchImpl) {
-  const { exports: E, calls } = loadSandbox({ fetchImpl });
+  const { exports: E, calls, sandbox } = loadSandbox({ fetchImpl });
   const c = new E.Component({});
   c.state = { students: [], activeId: null, screen: 'list', loading: true, saveStatus: 'idle', lastSavedAt: null };
-  return { c, calls };
+  return { c, calls, sandbox };
 }
 
 test('renderVals: list screen with no students shows empty state, not loading', () => {
@@ -238,4 +248,32 @@ test('loadStudents populates students from GET /api/students and clears loading'
 test('doPrint calls window.print without throwing', () => {
   const { c } = makeComponent();
   assert.doesNotThrow(() => c.doPrint());
+});
+
+test('doPrint sets document.title to "<name> - Thang <month>" for the PDF filename, sanitizing unsafe filename characters', () => {
+  const { c, sandbox } = makeComponent();
+  c.state.students = [{ id: 's1', name: 'Nguyễn Văn A', month: '8/2026', sessions: [] }];
+  c.state.activeId = 's1';
+  c.doPrint();
+  assert.equal(sandbox.document.title, 'Nguyễn Văn A - Thang 8-2026', 'the "/" in the month must be sanitized out of the filename');
+});
+
+test('doPrint restores the original document.title after the print dialog closes (afterprint)', () => {
+  const { c, sandbox } = makeComponent();
+  sandbox.document.title = 'Bundled Page';
+  c.state.students = [{ id: 's1', name: 'An', month: '9/2026', sessions: [] }];
+  c.state.activeId = 's1';
+  c.doPrint();
+  assert.notEqual(sandbox.document.title, 'Bundled Page', 'title should be swapped to the print filename during print');
+  sandbox.window.__fireEvent('afterprint');
+  assert.equal(sandbox.document.title, 'Bundled Page', 'title should be restored once printing is done');
+});
+
+test('doPrint leaves document.title untouched when there is no active student', () => {
+  const { c, sandbox } = makeComponent();
+  sandbox.document.title = 'Bundled Page';
+  c.state.students = [];
+  c.state.activeId = null;
+  c.doPrint();
+  assert.equal(sandbox.document.title, 'Bundled Page');
 });
